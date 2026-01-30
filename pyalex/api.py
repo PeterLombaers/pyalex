@@ -13,6 +13,7 @@ except ImportError:
     __version__ = "0.0.0"
 
 logger = logging.getLogger("pyalex")
+_api_key_warning_issued = False
 
 
 class AlexConfig(dict):
@@ -513,10 +514,17 @@ class BaseOpenAlex:
         return self.get(per_page=1).meta["count"]
 
     def _get_from_url(self, url, session=None):
+        global _api_key_warning_issued
         if session is None:
             session = _get_requests_session()
 
         logger.debug(f"Requesting URL: {url}")
+        if not config.api_key and not _api_key_warning_issued:
+            logger.warning(
+                "No API key configured. OpenAlex rate limits apply. "
+                "Set pyalex.config.api_key = 'YOUR_KEY' to configure your API key."
+            )
+            _api_key_warning_issued = True
 
         res = session.get(url, auth=OpenAlexAuth(config))
 
