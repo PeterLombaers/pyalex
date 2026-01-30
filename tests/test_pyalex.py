@@ -22,6 +22,7 @@ from pyalex import Topics
 from pyalex import Work
 from pyalex import Works
 from pyalex import autocomplete
+from pyalex import rate_limit
 from pyalex.api import QueryError
 
 # Load environment variables from .env file
@@ -64,6 +65,25 @@ def test_meta_entities(entity):
 def test_meta_entities_deprecated():
     r = Concepts().get()
     assert r.meta.get("count", False)
+
+
+def test_rate_limit_status():
+    r = Works().get()
+    for key in {"limit", "remaining", "credits_used", "reset"}:
+        assert isinstance(r.rate_limit_status[key], int)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("OPENALEX_API_KEY"),
+    reason="OPENALEX_API_KEY is not set in the environment variables",
+)
+def test_rate_limit_endpoint():
+    pyalex.config.api_key = None
+    with pytest.raises(ValueError):
+        rate_limit()
+    pyalex.config.api_key = os.environ["OPENALEX_API_KEY"]
+    rate_limit_info = rate_limit()
+    assert isinstance(rate_limit_info, dict)
 
 
 def test_works_params():

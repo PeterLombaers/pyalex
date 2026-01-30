@@ -33,6 +33,7 @@ from pyalex.api import Works
 from pyalex.api import autocomplete
 from pyalex.api import config
 from pyalex.api import invert_abstract
+from pyalex.api import rate_limit
 
 __all__ = [
     "Works",
@@ -62,5 +63,6 @@ __all__ = [
     "autocomplete",
     "config",
     "invert_abstract",
+    "rate_limit",
     "OpenAlexResponseList",
 ]

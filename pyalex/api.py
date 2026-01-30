@@ -227,6 +227,27 @@ def _get_requests_session():
     return requests_session
 
 
+def _get_int_from_headers(headers, key):
+    val = headers.get(key)
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except TypeError as e:
+        logger.error(f"Header {key} does not contain integer: {e}")
+        return None
+
+
+def _get_rate_limit_status(res):
+    headers = res.headers
+    return {
+        "limit": _get_int_from_headers(headers, "X-RateLimit-Limit"),
+        "remaining": _get_int_from_headers(headers, "X-RateLimit-Remaining"),
+        "credits_used": _get_int_from_headers(headers, "X-RateLimit-Credits-Used"),
+        "reset": _get_int_from_headers(headers, "X-RateLimit-Reset"),
+    }
+
+
 def invert_abstract(inv_index):
     """Invert OpenAlex abstract index.
 
@@ -271,6 +292,34 @@ def _wrap_values_nested_dict(d, func):
     return d
 
 
+def _send_request(url, session=None):
+    global _api_key_warning_issued
+    if session is None:
+        session = _get_requests_session()
+
+    logger.debug(f"Requesting URL: {url}")
+    if not config.api_key and not _api_key_warning_issued:
+        logger.warning(
+            "No API key configured. OpenAlex rate limits apply. "
+            "Set pyalex.config.api_key = 'YOUR_KEY' to configure your API key."
+        )
+        _api_key_warning_issued = True
+
+    res = session.get(url, auth=OpenAlexAuth(config))
+
+    if res.status_code == 400:
+        if (
+            isinstance(res.json()["error"], str)
+            and "query parameters" in res.json()["error"]
+        ):
+            raise QueryError(res.json()["message"])
+    if res.status_code == 401 and "API key" in res.json()["error"]:
+        raise QueryError(f"{res.json()['error']}. Did you configure a valid API key?")
+
+    res.raise_for_status()
+    return res
+
+
 class QueryError(ValueError):
     """Exception raised for errors in the query."""
 
@@ -288,20 +337,29 @@ class OpenAlexResponseList(list):
 
     Attributes:
         meta: a dictionary with metadata about the results
+        rate_limit_status: a dictionary with information about rate limits.
         resource_class: the class to use for each entity in the results
 
     Arguments:
         results: a list of OpenAlexEntity objects
         meta: a dictionary with metadata about the results
+        rate_limit_status: a dictionary with information about rate limits.
         resource_class: the class to use for each entity in the results
 
     Returns:
         a OpenAlexResponseList object
     """
 
-    def __init__(self, results, meta=None, resource_class=OpenAlexEntity):
+    def __init__(
+        self,
+        results,
+        meta=None,
+        resource_class=OpenAlexEntity,
+        rate_limit_status=None,
+    ):
         self.resource_class = resource_class
         self.meta = meta
+        self.rate_limit_status = rate_limit_status
 
         super().__init__([resource_class(ent) for ent in results])
 
@@ -514,41 +572,23 @@ class BaseOpenAlex:
         return self.get(per_page=1).meta["count"]
 
     def _get_from_url(self, url, session=None):
-        global _api_key_warning_issued
-        if session is None:
-            session = _get_requests_session()
-
-        logger.debug(f"Requesting URL: {url}")
-        if not config.api_key and not _api_key_warning_issued:
-            logger.warning(
-                "No API key configured. OpenAlex rate limits apply. "
-                "Set pyalex.config.api_key = 'YOUR_KEY' to configure your API key."
-            )
-            _api_key_warning_issued = True
-
-        res = session.get(url, auth=OpenAlexAuth(config))
-
-        if res.status_code == 400:
-            if (
-                isinstance(res.json()["error"], str)
-                and "query parameters" in res.json()["error"]
-            ):
-                raise QueryError(res.json()["message"])
-        if res.status_code == 401 and "API key" in res.json()["error"]:
-            raise QueryError(
-                f"{res.json()['error']}. Did you configure a valid API key?"
-            )
-
-        res.raise_for_status()
+        res = _send_request(url, session)
         res_json = res.json()
+        rate_limit_status = _get_rate_limit_status(res)
 
         if self.params and "group-by" in self.params:
             return OpenAlexResponseList(
-                res_json["group_by"], res_json["meta"], self.resource_class
+                res_json["group_by"],
+                res_json["meta"],
+                self.resource_class,
+                rate_limit_status=rate_limit_status,
             )
         elif "results" in res_json:
             return OpenAlexResponseList(
-                res_json["results"], res_json["meta"], self.resource_class
+                res_json["results"],
+                res_json["meta"],
+                self.resource_class,
+                rate_limit_status=rate_limit_status,
             )
         elif "id" in res_json:
             return self.resource_class(res_json)
@@ -913,8 +953,11 @@ class Work(OpenAlexEntity):
         res = _get_requests_session().get(n_gram_url, auth=OpenAlexAuth(config))
         res.raise_for_status()
         results = res.json()
+        rate_limit_status = _get_rate_limit_status(res)
 
-        resp_list = OpenAlexResponseList(results["ngrams"], results["meta"])
+        resp_list = OpenAlexResponseList(
+            results["ngrams"], results["meta"], rate_limit_status=rate_limit_status
+        )
 
         if return_meta:
             warnings.warn(
@@ -1107,6 +1150,29 @@ def autocomplete(s):
         List of autocomplete results.
     """
     return autocompletes()[s]
+
+
+def rate_limit():
+    """Check your rate limit status.
+    
+    Returns
+    -------
+    dict
+        Dictionary with information on your rate limit.
+        
+    Raises
+    ------
+    ValueError
+        If you have no API key configured.
+    """
+    if not config.api_key:
+        raise ValueError(
+            "You need to configure an API key to check your rate limits. "
+            "Set pyalex.config.api_key = 'YOUR_KEY' to configure your API key."
+        )
+    url = urlunparse(("https", "api.openalex.org", "rate-limit", "", "", ""))
+    res = _send_request(url)
+    return res.json()
 
 
 # aliases
